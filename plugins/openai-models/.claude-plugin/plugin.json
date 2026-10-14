@@ -1,0 +1,10 @@
+{
+  "name": "openai-models",
+  "version": "0.1.0",
+  "description": "OpenAI models in Claude Code on your ChatGPT plan: Sign in with ChatGPT, then /gpt use <model> lets it answer the session's turns with Claude Code's core tools. Experimental.",
+  "author": {
+    "name": "Guido Vermeulen"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

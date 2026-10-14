@@ -62,6 +62,30 @@ Then, in Claude Code:
 
 Anything near the microphone that sounds like speech becomes a prompt, with the permissions your session has. Turn it off when you are not talking to Claude.
 
+## openai-models: GPT in Claude Code, on your ChatGPT plan (experimental)
+
+Signs in with your ChatGPT account through OpenAI's [Sign in with ChatGPT for open-source and local apps](https://developers.openai.com/siwc/token-sharing-open-source), then lets an OpenAI model answer the turns of a Claude Code session in Claude's place. Usage counts against your ChatGPT plan, not an API key; ChatGPT's settings show it per app and can cap it.
+
+```bash
+claude plugin install openai-models@guido-mods
+```
+
+| Command | What it does |
+| --- | --- |
+| `/gpt login` | Opens your browser: sign in and allow plan usage. The tokens stay in `~/.config/claude-openai-models/credentials.json` |
+| `/gpt models` | The models your account can use |
+| `/gpt use <model>` | That model answers this session's turns; a band above the prompt says so, with **Back to Claude** |
+| `/gpt off` | Claude answers again (`/gpt on` brings back the last model) |
+| `/gpt status` · `/gpt logout` | Who is signed in · forget the tokens |
+
+How it works and where it stops:
+
+- The main loop's steps go to OpenAI's Responses API with Claude Code's own system prompt, the whole conversation, and Claude Code's core tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch and TodoWrite. Claude Code still runs every tool and asks you first where it would for Claude.
+- A mod is not given the tools' schemas, so these nine are written out by hand; MCP tools are not offered to GPT, and calls Claude made to them reach it as text.
+- Subagents keep running on Claude. Images in tool results reach GPT as "[image omitted]". GPT's reasoning is not carried from one step to the next.
+- The `/model` picker cannot list these models: a mod cannot add choices to it.
+- Needs Python 3 on the PATH (`/gpt python <path>` for another); `scripts/gpt.py` uses only its standard library.
+
 ## License
 
 MIT. cache-tax is © 2026 Karan Bansal; see [plugins/cache-tax/LICENSE](plugins/cache-tax/LICENSE). live-voice is © 2026 Guido Vermeulen.

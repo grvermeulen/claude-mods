@@ -16,6 +16,11 @@
       "name": "live-voice",
       "source": "./plugins/live-voice",
       "description": "Hands-free voice: listens with local Whisper, sends each spoken request, and reads the reply aloud. Windows."
+    },
+    {
+      "name": "openai-models",
+      "source": "./plugins/openai-models",
+      "description": "OpenAI models on your ChatGPT plan: Sign in with ChatGPT, then /gpt use <model> lets it answer the session's turns. Experimental."
     }
   ]
 }
