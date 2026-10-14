@@ -1,7 +1,7 @@
 {
   "name": "live-voice",
-  "version": "0.1.0",
-  "description": "Hands-free voice for Claude Code: listens through the microphone with local Whisper, sends each spoken request, and reads the reply aloud. /listen to start. Windows; needs the setup in scripts/setup.ps1.",
+  "version": "0.2.0",
+  "description": "Hands-free voice for Claude Code: listens through the microphone, sends each spoken request, and reads the reply aloud. OpenAI hears and speaks by default (OPENAI_API_KEY); /listen engine local uses Whisper and a Windows voice. /listen to start. Windows.",
   "author": {
     "name": "Guido Vermeulen"
   },

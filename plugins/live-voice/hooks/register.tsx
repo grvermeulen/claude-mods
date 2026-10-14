@@ -12,10 +12,11 @@ const heard = atom({ plugin: 'live-voice', key: 'heard' } as const, '')
 export const SEND_AFTER_MS = 1500
 const SPOKEN_CHARS = 700
 const MODELS = ['tiny', 'base', 'small', 'medium']
+const HINT = 'on | off | status | setup | engine openai|local | language nl | speak on|off | voice <name> | device <name> | model small'
 
 const LABELS: Record<Phase, string> = {
   off: 'off',
-  loading: 'loading the speech model…',
+  loading: 'starting…',
   listening: 'listening',
   hearing: 'hearing you…',
   transcribing: 'writing down what you said…',
@@ -23,8 +24,11 @@ const LABELS: Record<Phase, string> = {
   speaking: 'speaking',
 }
 
-export type Settings = { language: string; speak: boolean; device: string; model: string; voice: string }
-const DEFAULTS: Settings = { language: 'nl', speak: true, device: '', model: 'small', voice: '' }
+/** openai: OpenAI hears and speaks (gpt-4o-transcribe, gpt-4o-mini-tts); local: Whisper and a Windows voice. */
+export type Engine = 'openai' | 'local'
+export type Settings = { engine: Engine; language: string; speak: boolean; device: string; model: string; voice: string }
+const DEFAULTS: Settings = { engine: 'openai', language: 'nl', speak: true, device: '', model: 'small', voice: '' }
+const OPENAI_VOICE = 'marin'
 
 type Stream = ReturnType<EngineInterface['process']['spawn']>
 
@@ -55,6 +59,7 @@ export function settingsFrom(raw: unknown): Settings {
   const v = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
   const text = (key: 'language' | 'device' | 'model' | 'voice') => (typeof v[key] === 'string' ? (v[key] as string) : DEFAULTS[key])
   return {
+    engine: v.engine === 'local' || v.engine === 'openai' ? v.engine : DEFAULTS.engine,
     language: text('language'),
     speak: typeof v.speak === 'boolean' ? v.speak : DEFAULTS.speak,
     device: text('device'),
@@ -72,9 +77,15 @@ function python(s: State): string {
 }
 
 function describe(s: State): string {
-  const { language, model, speak, device, voice } = s.settings
-  return `language ${language} · Whisper ${model} · read aloud ${speak ? 'on' : 'off'} · ` +
-    `microphone ${device || 'default'}${voice ? ` · voice ${voice}` : ''}`
+  const { engine, language, model, speak, device, voice } = s.settings
+  const ears = engine === 'openai' ? 'OpenAI' : `Whisper ${model}`
+  const mouth = engine === 'openai' ? voice || OPENAI_VOICE : voice || 'Windows'
+  return `language ${language} · ${ears} · read aloud ${speak ? `on (${mouth})` : 'off'} · microphone ${device || 'default'}`
+}
+
+/** The API key the scripts will read, by either name; never stored or shown. */
+async function hasKey($: EngineInterface): Promise<boolean> {
+  return Boolean((await $.env.get('OPENAI_API_KEY')) || (await $.env.get('CHATGPT_API_KEY')))
 }
 
 function cancelSend(s: State) {
@@ -92,14 +103,22 @@ async function setControl($: EngineInterface, s: State, word: 'listen' | 'pause'
 
 async function start($: EngineInterface, s: State): Promise<string> {
   if (s.listener) return 'live voice is already on'
+  const isOpenai = s.settings.engine === 'openai'
   if (!(await $.fs.exists(python(s)))) {
-    return 'live voice needs its speech setup first: /listen setup (a few minutes; Python packages and the Whisper model, about 600 MB)'
+    return isOpenai
+      ? 'live voice needs its setup first: /listen setup (a minute; a Python environment with sounddevice)'
+      : 'live voice needs its speech setup first: /listen setup (a few minutes; Python packages and the Whisper model, about 600 MB)'
+  }
+  if (isOpenai && !(await hasKey($))) {
+    return 'live voice with OpenAI needs an API key in the environment variable OPENAI_API_KEY (or CHATGPT_API_KEY). ' +
+      'Set it, restart Claude, and /listen again; or /listen engine local for Whisper and a Windows voice.'
   }
   s.isStopping = false
   await setControl($, s, 'listen')
   await setPhase($, 'loading')
-  const argv = [python(s), '-I', `${$.plugin.root}/scripts/listen.py`, '--models', `${s.dir}/models`,
-    '--model', s.settings.model, '--language', s.settings.language, '--control', s.control]
+  const argv = [python(s), '-I', `${$.plugin.root}/scripts/listen.py`, '--engine', s.settings.engine,
+    '--language', s.settings.language, '--control', s.control]
+  if (!isOpenai) argv.push('--models', `${s.dir}/models`, '--model', s.settings.model)
   if (s.settings.device) argv.push('--device', s.settings.device)
   const stream = $.process.spawn({ argv, env: { HF_HUB_OFFLINE: '1', HF_HUB_DISABLE_SYMLINKS_WARNING: '1' } })
   s.listener = stream
@@ -209,19 +228,30 @@ async function resume($: EngineInterface, s: State) {
   await setPhase($, 'listening')
 }
 
+/** The command that speaks on this machine with this engine; null where the engine's own speech is used. */
+function speaker(root: string, s: State): string[] | null {
+  const language = s.settings.language === 'auto' ? 'nl' : s.settings.language
+  if (s.settings.engine === 'openai') {
+    return [python(s), '-I', `${root}/scripts/speak.py`, '--voice', s.settings.voice || OPENAI_VOICE,
+      '--language', language, '--control', s.control]
+  }
+  if (!s.isWindows) return null
+  const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', `${root}/scripts/speak.ps1`, '-Language', language, '-StopFile', s.control]
+  if (s.settings.voice) argv.push('-Voice', s.settings.voice)
+  return argv
+}
+
 async function say($: EngineInterface, s: State, text: string) {
   s.speaking = true
   try {
-    if (s.isWindows) {
-      const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', `${$.plugin.root}/scripts/speak.ps1`, '-Language', s.settings.language === 'auto' ? 'nl' : s.settings.language,
-        '-StopFile', s.control]
-      if (s.settings.voice) argv.push('-Voice', s.settings.voice)
+    const argv = speaker($.plugin.root, s)
+    if (argv) {
       let errors = ''
       for await (const { stream, text: out } of $.process.spawn({ argv, input: text })) {
         if (stream === 'stderr') errors += out
       }
-      if (errors.trim()) $.ui.log(`live voice could not speak: ${errors.trim().split(/\r?\n/)[0]}`)
+      if (errors.trim()) $.ui.log(`live voice could not speak: ${errors.trim().split(/\r?\n/).at(-1)}`)
     } else {
       await $.audio.speak(text, s.settings.voice ? { voice: s.settings.voice } : undefined)
     }
@@ -243,9 +273,10 @@ async function answer($: EngineInterface, s: State, text: string) {
 
 async function setup($: EngineInterface, s: State): Promise<string> {
   if (!s.isWindows) return 'setup runs on Windows only for now; elsewhere create the venv by hand (see the README)'
-  $.ui.toast('live voice: installing speech recognition, a few minutes…')
+  $.ui.toast(`live voice: setting up for ${s.settings.engine === 'openai' ? 'OpenAI, a minute' : 'Whisper, a few minutes'}…`)
   const r = await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', `${$.plugin.root}/scripts/setup.ps1`, '-Dir', s.dir, '-Model', s.settings.model], { timeoutMs: 600_000 })
+    '-File', `${$.plugin.root}/scripts/setup.ps1`, '-Dir', s.dir, '-Engine', s.settings.engine, '-Model', s.settings.model],
+  { timeoutMs: 600_000 })
   if (r.exitCode === 0) return 'live voice is set up. /listen to start.'
   const tail = `${r.stdout}\n${r.stderr}`.trim().split(/\r?\n/).slice(-4).join('\n')
   return `live voice setup failed (exit ${r.exitCode}):\n${tail}`
@@ -273,6 +304,9 @@ async function command($: EngineInterface, s: State, args: string): Promise<stri
       return `live voice ${LABELS[await read($, phase)]} · ${describe(s)}`
     case 'setup':
       return setup($, s)
+    case 'engine':
+      if (arg !== 'openai' && arg !== 'local') return '/listen engine takes openai (OpenAI hears and speaks) or local (Whisper and a Windows voice)'
+      return save($, s, { engine: arg, voice: '' }, true)
     case 'language':
       if (!/^([a-z]{2}|auto)$/.test(arg)) return '/listen language takes a code such as nl or en, or auto'
       return save($, s, { language: arg }, true)
@@ -286,10 +320,14 @@ async function command($: EngineInterface, s: State, args: string): Promise<stri
       if (!MODELS.includes(arg)) return `/listen model takes ${MODELS.join(', ')}; a new one needs /listen setup to download it`
       return save($, s, { model: arg }, true)
     case 'voice':
-      if (!arg) return '/listen voice takes a Windows voice\'s name (Microsoft Frank) or default'
+      if (!arg) {
+        return s.settings.engine === 'openai'
+          ? '/listen voice takes an OpenAI voice (marin, cedar, coral, sage, alloy, ash, ballad, echo, fable, nova, onyx, shimmer, verse) or default'
+          : '/listen voice takes a Windows voice\'s name (Microsoft Frank) or default'
+      }
       return save($, s, { voice: arg === 'default' ? '' : arg }, false)
     default:
-      return '/listen [on | off | status | setup | language nl | speak on|off | device <name> | model small | voice <name>]'
+      return `/listen [${HINT}]`
   }
 }
 
@@ -306,7 +344,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'listen',
       description: 'Hands-free voice: talk to Claude and hear the reply (live-voice)',
-      argumentHint: '[on | off | status | setup | language nl | speak on|off | device <name> | model small | voice <name>]',
+      argumentHint: `[${HINT}]`,
       immediate: true,
     })
     return started

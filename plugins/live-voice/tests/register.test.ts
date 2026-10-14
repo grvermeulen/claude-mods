@@ -49,10 +49,12 @@ function listenerLines() {
   }
 }
 
-// The world beneath the mod: a Windows machine with the setup done or not.
-function world(on: On, opts: { hasSetup?: boolean } = {}) {
+const isSpeaker = (argv: readonly string[]) => argv.some(a => /speak\.(py|ps1)$/.test(a))
+
+// The world beneath the mod: a Windows machine with the setup done or not, and an API key or not.
+function world(on: On, opts: { hasSetup?: boolean; key?: Record<string, string> } = {}) {
   mock.store(on, {})
-  mock.env(on, { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' })
+  mock.env(on, { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me', ...(opts.key ?? { OPENAI_API_KEY: 'sk-test' }) })
   const lines = listenerLines()
   const control: string[] = []
   const spawned: Array<{ argv: string[]; input?: string }> = []
@@ -83,7 +85,7 @@ function world(on: On, opts: { hasSetup?: boolean } = {}) {
   on('turn.complete', ($, e) => ({ text: 'answer' in e ? e.answer : '' }))
   on('process.spawn', async function* ($, e) {
     spawned.push({ argv: [...e.argv], input: e.input })
-    if (e.argv[0] === 'powershell.exe') return { value: { code: 0, signal: null } }
+    if (isSpeaker(e.argv)) return { value: { code: 0, signal: null } }
     for await (const line of lines) yield { stream: 'stdout' as const, text: line + '\n' }
     return { value: { code: 0, signal: null } }
   })
@@ -118,7 +120,9 @@ describe('speech helpers', () => {
   })
 
   test('settingsFrom keeps what is valid and fills the rest', async () => {
-    expect(settingsFrom({ language: 'en', speak: 'yes', model: 3 })).toEqual({ language: 'en', speak: true, device: '', model: 'small', voice: '' })
+    expect(settingsFrom({ language: 'en', speak: 'yes', model: 3, engine: 'cloud' }))
+      .toEqual({ engine: 'openai', language: 'en', speak: true, device: '', model: 'small', voice: '' })
+    expect(settingsFrom({ engine: 'local' }).engine).toBe('local')
     expect(settingsFrom(null).language).toBe('nl')
   })
 })
@@ -133,13 +137,46 @@ describe('conversation', () => {
     expect(w.spawned).toEqual([])
   })
 
+  test('without an API key, /listen says which variable to set and starts nothing', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const w = world(on, { key: {} })
+    await $.session.start(session)
+    const r = await $.command.run(run(''))
+    expect(r.text).toMatch(/OPENAI_API_KEY \(or CHATGPT_API_KEY\)/)
+    expect(r.text).not.toMatch(/sk-/)
+    expect(w.spawned).toEqual([])
+  })
+
+  test('CHATGPT_API_KEY counts as the key', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const w = world(on, { key: { CHATGPT_API_KEY: 'sk-test' } })
+    await $.session.start(session)
+    const r = await $.command.run(run(''))
+    expect(r.text).toMatch(/live voice starting: language nl · OpenAI · read aloud on \(marin\)/)
+    expect(w.spawned[0].argv).toEqual(expect.arrayContaining(['--engine', 'openai', '--language', 'nl']))
+    expect(w.spawned[0].argv).not.toContain('sk-test')
+    w.lines.close()
+    await flush()
+  })
+
+  test('engine local listens with Whisper and needs no key', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const w = world(on, { key: {} })
+    await $.session.start(session)
+    expect(await $.command.run(run('engine local')).then(r => r.text)).toMatch(/Whisper small/)
+    await $.command.run(run(''))
+    expect(w.spawned[0].argv).toEqual(expect.arrayContaining(['--engine', 'local', '--model', 'small']))
+    w.lines.close()
+    await flush()
+  })
+
   test('words are sent after a pause as the person\'s own, and the microphone pauses', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
     const w = world(on)
     await $.session.start(session)
     const r = await $.command.run(run(''))
     expect(r.text).toMatch(/live voice starting: language nl/)
-    expect(w.spawned[0].argv).toEqual(expect.arrayContaining(['--language', 'nl', '--model', 'small']))
+    expect(w.spawned[0].argv).toEqual(expect.arrayContaining(['--engine', 'openai', '--language', 'nl']))
     w.lines.push('{"type":"ready"}', '{"type":"speech"}', '{"type":"heard"}', '{"type":"text","text":"Draai de tests"}')
     await flush()
     expect(w.toasts).toEqual(['live voice: listening'])
@@ -184,8 +221,8 @@ describe('conversation', () => {
     expect(w.control.at(-1)).toBe('pause')
     await $.turn.complete(turn('Alle tests slagen.\n\n```\nnpm test\n```'))
     await flush()
-    const speak = w.spawned.find(s => s.argv[0] === 'powershell.exe')
-    expect(speak?.argv).toEqual(expect.arrayContaining(['-Language', 'nl', '-StopFile']))
+    const speak = w.spawned.find(s => isSpeaker(s.argv))
+    expect(speak?.argv).toEqual(expect.arrayContaining(['--voice', 'marin', '--language', 'nl', '--control']))
     expect(speak?.input).toBe('Alle tests slagen.')
     expect(w.control.at(-1)).toBe('listen')
     w.lines.close()
@@ -201,7 +238,7 @@ describe('conversation', () => {
     await flush()
     await $.turn.complete(turn('Half antwoord', { isAborted: true }))
     await flush()
-    expect(w.spawned.filter(s => s.argv[0] === 'powershell.exe')).toEqual([])
+    expect(w.spawned.filter(s => isSpeaker(s.argv))).toEqual([])
     expect(w.control.at(-1)).toBe('listen')
     w.lines.close()
     await flush()
@@ -220,7 +257,7 @@ describe('conversation', () => {
     w.lines.close()
     expect((await stopping).text).toBe('live voice off')
     const status = await $.command.run(run('status'))
-    expect(status.text).toMatch(/^live voice off · language nl/)
+    expect(status.text).toMatch(/^live voice off · language nl · OpenAI/)
   })
 
   test('the listener ending by itself is reported', async ($, on) => {
