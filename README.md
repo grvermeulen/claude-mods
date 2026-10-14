@@ -74,7 +74,8 @@ claude plugin install openai-models@guido-mods
 | --- | --- |
 | `/gpt login` | Opens your browser: sign in and allow plan usage. The tokens stay in `~/.config/claude-openai-models/credentials.json` |
 | `/gpt models` | The models your account can use |
-| `/gpt use <model>` | That model answers this session's turns; a band above the prompt says so, with **Back to Claude** |
+| `/gpt picker` | Adds them to the `/model` picker, after Claude's, through the `modelPicker` setting in your user settings; pick one and it answers the session, subagents included. `/gpt picker off` takes them out again |
+| `/gpt use <model>` | Without the picker: that model answers this session's main loop; a band above the prompt says so, with **Back to Claude** |
 | `/gpt off` | Claude answers again (`/gpt on` brings back the last model) |
 | `/gpt status` · `/gpt logout` | Who is signed in · forget the tokens |
 
@@ -82,8 +83,8 @@ How it works and where it stops:
 
 - The main loop's steps go to OpenAI's Responses API with Claude Code's own system prompt, the whole conversation, and Claude Code's core tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch and TodoWrite. Claude Code still runs every tool and asks you first where it would for Claude.
 - A mod is not given the tools' schemas, so these nine are written out by hand; MCP tools are not offered to GPT, and calls Claude made to them reach it as text.
-- Subagents keep running on Claude. Images in tool results reach GPT as "[image omitted]". GPT's reasoning is not carried from one step to the next.
-- The `/model` picker cannot list these models: a mod cannot add choices to it.
+- With `/gpt use`, subagents keep running on Claude; a model picked in `/model` answers the subagents that inherit it too, though with the main session's system prompt. Images in tool results reach GPT as "[image omitted]". GPT's reasoning is not carried from one step to the next.
+- Claude Code's own calls outside a turn's steps (a compaction summary, for one) still go to Anthropic with the picked model's name, and fail; pick a Claude model for those.
 - Needs Python 3 on the PATH (`/gpt python <path>` for another); `scripts/gpt.py` uses only its standard library.
 
 ## License

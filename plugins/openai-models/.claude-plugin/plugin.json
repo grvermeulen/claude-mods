@@ -1,7 +1,7 @@
 {
   "name": "openai-models",
-  "version": "0.1.0",
-  "description": "OpenAI models in Claude Code on your ChatGPT plan: Sign in with ChatGPT, then /gpt use <model> lets it answer the session's turns with Claude Code's core tools. Experimental.",
+  "version": "0.2.0",
+  "description": "OpenAI models in Claude Code on your ChatGPT plan: Sign in with ChatGPT, /gpt picker lists them in the /model picker, and the one you pick answers the session's turns with Claude Code's core tools. Experimental.",
   "author": {
     "name": "Guido Vermeulen"
   },

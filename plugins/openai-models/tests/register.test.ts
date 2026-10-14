@@ -3,6 +3,7 @@ import type { CommandRunInput, On, SessionStartInput, TurnStepChunk, TurnStepInp
 
 import { StepTranslator, instructionsFor, toInput, toolsFor, usageFrom } from '../hooks/translate'
 import type { ApiMessage } from '../hooks/translate'
+import { freshState, routeFor, withPickerRows } from '../hooks/register'
 
 tier('user')
 
@@ -102,18 +103,53 @@ describe('translation', () => {
     expect(t.finish().result).toEqual(expect.objectContaining({ stopReason: 'end_turn', toolUses: [] }))
   })
 
+  test('withPickerRows replaces only its own rows and keeps everything else', async () => {
+    const mine = { model: 'gpt-old', label: 'Old (ChatGPT)', description: 'OpenAI on your ChatGPT plan (openai-models)' }
+    const theirs = { model: 'us.anthropic.claude-opus-4-8', label: 'Opus (production)' }
+    const settings = { theme: 'dark', modelPicker: { replaceBuiltInOptions: false, options: [theirs, mine] } }
+    expect(withPickerRows(settings, [{ slug: 'gpt-6.1-sol', name: 'GPT-6.1-Sol' }])).toEqual({
+      theme: 'dark',
+      modelPicker: { replaceBuiltInOptions: false, options: [theirs, { model: 'gpt-6.1-sol', label: 'GPT-6.1-Sol (ChatGPT)', description: 'OpenAI on your ChatGPT plan (openai-models)' }] },
+    })
+    expect(withPickerRows({ theme: 'dark', modelPicker: { options: [mine] } }, [])).toEqual({ theme: 'dark' })
+  })
+
+  test('routeFor sends a step on one of the account\'s models to OpenAI, subagents too; /gpt use only the main loop', async () => {
+    const s = freshState()
+    s.models = [{ slug: 'gpt-6.1-sol', name: 'GPT-6.1-Sol' }]
+    const at = (model: string, agentId?: string): TurnStepInput => ({ turnId: 't', index: 0, model, messageCount: 1, ...(agentId ? { agentId } : {}) })
+    expect(routeFor(s, at('gpt-6.1-sol'))?.slug).toBe('gpt-6.1-sol')
+    expect(routeFor(s, at('gpt-6.1-sol', 'a1'))?.slug).toBe('gpt-6.1-sol')
+    expect(routeFor(s, at('claude-opus-5-5'))).toBe(null)
+    s.active = { slug: 'gpt-6-luna', name: 'GPT-6-Luna' }
+    expect(routeFor(s, at('claude-opus-5-5'))?.slug).toBe('gpt-6-luna')
+    expect(routeFor(s, at('claude-opus-5-5', 'a1'))).toBe(null)
+  })
+
   test('usageFrom maps cached input to cache reads', async () => {
     expect(usageFrom(null, 'm')).toBe(null)
     expect(usageFrom({ input_tokens: 10, output_tokens: 2 }, 'm')).toEqual({ input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'm' })
   })
 })
 
+// The engine may hand paths over with either slash; the test's files are keyed one way.
+const key = (path: string) => path.replace(/\\/g, '/').toLowerCase()
+const SETTINGS = key('C:\\Users\\me/.claude/settings.json')
+
 // The world beneath the mod: gpt.py's answers, the session's conversation, and Claude.
-function world(on: On, opts: { infer?: string[] } = {}) {
+function world(on: On, opts: { infer?: string[]; settings?: string } = {}) {
   mock.store(on, {})
-  mock.env(on, { OS: 'Windows_NT' })
+  mock.env(on, { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' })
   const runs: string[][] = []
   const spawned: Array<{ argv: string[]; input?: string }> = []
+  const files = new Map<string, string>(opts.settings ? [[SETTINGS, opts.settings]] : [])
+  const agentsAsked: Array<string | undefined> = []
+  on('fs.exists', ($, e) => ({ value: files.has(key(e.path)) }))
+  on('fs.read', ($, e) => ({ value: files.get(key(e.path)) ?? '' }))
+  on('fs.write', ($, e) => {
+    files.set(key(e.path), e.text)
+    return { value: undefined }
+  })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('process.run', ($, e) => {
@@ -124,7 +160,11 @@ function world(on: On, opts: { infer?: string[] } = {}) {
       : JSON.stringify({ type: 'status', signed_in: true, email: 'me@example.com', plan: true })
     return { value: { exitCode: 0, stdout: stdout + '\n', stderr: '' } }
   })
-  on('session.messages', () => ({ value: MESSAGES }))
+  on('session.messages', ($, e) => {
+    const agentId = (e as { agentId?: string }).agentId
+    agentsAsked.push(agentId)
+    return { value: agentId === 'unreadable' ? { deny: 'not this session\'s agent' } : MESSAGES }
+  })
   on('prompt.compose', () => ({ sections: [{ id: 'core', text: 'You are Claude Code.', scope: 'shared' }] }))
   on('tool.list', () => ({ value: TOOLS }))
   on('process.spawn', async function* ($, e) {
@@ -136,7 +176,7 @@ function world(on: On, opts: { infer?: string[] } = {}) {
     yield { kind: 'text' as const, index: 0, text: 'from Claude' }
     return { turnId: e.turnId, index: e.index, answer: 'from Claude', toolUses: [], stopReason: 'end_turn' as const, usage: null }
   })
-  return { runs, spawned }
+  return { runs, spawned, files, agentsAsked }
 }
 
 const INFER = [
@@ -171,12 +211,39 @@ describe('the main loop', () => {
     expect(body.input).toHaveLength(6)
   })
 
-  test('a subagent\'s steps stay with Claude', async ($, on) => {
+  test('with /gpt use, a subagent on a Claude model stays with Claude', async ($, on) => {
     world(on, { infer: INFER })
     await $.session.start(session)
     await $.command.run(run('use gpt-6.1-sol'))
     const { chunks } = await drain($.turn.step(step({ agentId: 'agent-1' })))
     expect(chunks).toEqual([{ kind: 'text', index: 0, text: 'from Claude' }])
+  })
+
+  test('/gpt picker writes the account\'s models into the /model picker and keeps the other settings', async ($, on) => {
+    const w = world(on, { infer: INFER, settings: '{\n  "theme": "dark",\n  "enabledPlugins": { "skins@hellosverre-mods": true }\n}\n' })
+    await $.session.start(session)
+    expect((await $.command.run(run('picker'))).text).toMatch(/^1 ChatGPT models added to the \/model picker/)
+    const written = JSON.parse(w.files.get(SETTINGS) ?? '{}')
+    expect(written).toEqual({
+      theme: 'dark',
+      enabledPlugins: { 'skins@hellosverre-mods': true },
+      modelPicker: { options: [{ model: 'gpt-6.1-sol', label: 'GPT-6.1 Sol (ChatGPT)', description: 'OpenAI on your ChatGPT plan (openai-models)' }] },
+    })
+    await $.command.run(run('picker off'))
+    expect(JSON.parse(w.files.get(SETTINGS) ?? '{}')).toEqual({ theme: 'dark', enabledPlugins: { 'skins@hellosverre-mods': true } })
+  })
+
+  test('a step on a ChatGPT model picked in /model goes to OpenAI, a subagent\'s with its own conversation', async ($, on) => {
+    const w = world(on, { infer: INFER })
+    await $.session.start(session)
+    await $.command.run(run('models'))
+    const main = await drain($.turn.step(step({ model: 'gpt-6.1-sol' })))
+    expect(main.chunks.map(c => c.kind)).toEqual(['text', 'tool', 'input', 'stop'])
+    const sub = await drain($.turn.step(step({ model: 'gpt-6.1-sol', agentId: 'agent-1' })))
+    expect(sub.chunks.map(c => c.kind)).toEqual(['text', 'tool', 'input', 'stop'])
+    expect(w.agentsAsked).toEqual([undefined, 'agent-1'])
+    const denied = await drain($.turn.step(step({ model: 'gpt-6.1-sol', agentId: 'unreadable' })))
+    expect(denied.chunks[0]).toEqual(expect.objectContaining({ kind: 'text', text: expect.stringMatching(/cannot be read; give it a Claude model/) }))
   })
 
   test('a failure becomes text the person reads', async ($, on) => {
