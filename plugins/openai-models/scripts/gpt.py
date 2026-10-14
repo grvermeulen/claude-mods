@@ -341,8 +341,9 @@ def relay(event):
 def status():
     record = load()
     signed_in = bool(record.get("refresh_token"))
+    expires_in = int(record["expires_at"] - time.time()) if record.get("expires_at") else None
     emit("status", signed_in=signed_in, email=record.get("email"),
-         plan=PLAN_SCOPE in (record.get("scopes") or []), expires_in=int(record.get("expires_at", 0) - time.time()))
+         plan=PLAN_SCOPE in (record.get("scopes") or []), expires_in=expires_in)
 
 
 def logout():
