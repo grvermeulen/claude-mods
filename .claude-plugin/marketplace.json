@@ -1,0 +1,16 @@
+{
+  "name": "guido-mods",
+  "owner": {
+    "name": "Guido"
+  },
+  "metadata": {
+    "description": "Local Claude Code mods: tweaked copies of community mods."
+  },
+  "plugins": [
+    {
+      "name": "cache-tax",
+      "source": "./plugins/cache-tax",
+      "description": "cache-tax 2.2.1 by Karan Bansal, with a Send anyway button: a cold send asks first instead of being dropped."
+    }
+  ]
+}

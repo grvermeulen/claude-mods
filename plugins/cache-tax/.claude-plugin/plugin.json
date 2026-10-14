@@ -1,0 +1,9 @@
+{
+  "name": "cache-tax",
+  "version": "2.2.1-ask.2",
+  "description": "A Claude Code mod that keeps the one-hour prompt cache warm during breaks and asks before a cold send, with its estimated rewrite cost and a Send anyway button. Warming uses model requests and costs tokens. Requires Claude Code 2.1.287+. Local copy of cache-tax 2.2.1 (karanb192/cache-tax).",
+  "author": {
+    "name": "Karan Bansal"
+  },
+  "license": "MIT"
+}
