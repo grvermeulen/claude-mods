@@ -1,0 +1,10 @@
+{
+  "name": "live-voice",
+  "version": "0.1.0",
+  "description": "Hands-free voice for Claude Code: listens through the microphone with local Whisper, sends each spoken request, and reads the reply aloud. /listen to start. Windows; needs the setup in scripts/setup.ps1.",
+  "author": {
+    "name": "Guido Vermeulen"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

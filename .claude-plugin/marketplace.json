@@ -11,6 +11,11 @@
       "name": "cache-tax",
       "source": "./plugins/cache-tax",
       "description": "cache-tax 2.2.1 by Karan Bansal, with a Send anyway button: a cold send asks first instead of being dropped."
+    },
+    {
+      "name": "live-voice",
+      "source": "./plugins/live-voice",
+      "description": "Hands-free voice: listens with local Whisper, sends each spoken request, and reads the reply aloud. Windows."
     }
   ]
 }
