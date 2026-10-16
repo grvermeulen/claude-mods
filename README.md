@@ -75,16 +75,28 @@ claude plugin install openai-models@guido-mods
 | `/gpt login` | Opens your browser: sign in and allow plan usage. The tokens stay in `~/.config/claude-openai-models/credentials.json` |
 | `/gpt models` | The models your account can use |
 | `/gpt picker` | Adds them to the `/model` picker, after Claude's, through the `modelPicker` setting in your user settings; pick one and it answers the session, subagents included. `/gpt picker off` takes them out again |
-| `/gpt use <model>` | Without the picker: that model answers this session's main loop; a band above the prompt says so, with **Back to Claude** |
+| `/gpt use <model>` | Without the picker: that model answers this session's main loop. A part of the ID will do (`astra`, `6.1-sol`) when it names one model. It stays picked for the session across a plugin reload |
 | `/gpt off` | Claude answers again (`/gpt on` brings back the last model) |
-| `/gpt status` · `/gpt logout` | Who is signed in · forget the tokens |
+| `/gpt agents follow` · `/gpt agents claude` | Subagents answer with whoever answers the loop that starts them (the default), or always run on Claude |
+| `/gpt usage` | GPT's requests and tokens in this session, and the last error from OpenAI |
+| `/gpt schemas` | Reads Claude Code's tool schemas again (it also does at every session start) |
+| `/gpt status` · `/gpt logout` | Who is signed in and who answers · forget the tokens |
 
-How it works and where it stops:
+How it works:
 
-- The main loop's steps go to OpenAI's Responses API with Claude Code's own system prompt, the whole conversation, and Claude Code's core tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch and TodoWrite. Claude Code still runs every tool and asks you first where it would for Claude.
-- A mod is not given the tools' schemas, so these nine are written out by hand; MCP tools are not offered to GPT, and calls Claude made to them reach it as text.
-- With `/gpt use`, subagents keep running on Claude; a model picked in `/model` answers the subagents that inherit it too, though with the main session's system prompt. Images in tool results reach GPT as "[image omitted]". GPT's reasoning is not carried from one step to the next.
-- Claude Code's own calls outside a turn's steps (a compaction summary, for one) still go to Anthropic with the picked model's name, and fail; pick a Claude model for those.
+- **Tools.** GPT gets every tool the session can call. Claude Code does not hand a mod the tools' schemas, so the mod reads them from the types file Claude Code's plugin tooling writes (all 79 built-in tools on 2.1.295), refreshes them at session start, and ships a copy for when it finds none. A deferred MCP tool gets its schema the way Claude gets it: once ToolSearch has loaded it into the conversation, the mod takes the schema from there. A tool with no schema at all is reachable through one `invoke_tool` function by its name; Claude Code checks its arguments against the real schema. Names OpenAI does not accept (over 64 characters) are shortened and mapped back.
+- **Permissions.** Claude Code still runs every tool, with the same permission checks it gives Claude.
+- **Subagents** started while GPT answers run on GPT too (`/gpt agents claude` keeps them on Claude; a model the Agent call names stands). A subagent on GPT gets its own conversation and a role naming its type and task; for a plugin's, project's or your own agent, its definition file's instructions too.
+- **Compaction** of a conversation GPT answers is written by GPT. Another plugin's `$.model.complete` naming a ChatGPT model, and its `$.model.fork` while GPT answers, go to OpenAI too.
+- **Context.** Claude's thinking goes to GPT as text; PDFs as files, text documents as text; images in tool results as images. GPT's own reasoning is carried from step to step (encrypted, as OpenAI returns it), and Claude Code's effort setting becomes GPT's reasoning effort. A model that refuses one of these gets the request again without it, and the band says so.
+- **Usage.** The band and `/gpt usage` count GPT's requests and tokens; Claude Code's own cost line does not price GPT. Cache Tax leaves GPT's turns out of Claude's cache clock, size and cost.
+- **Sign-in.** The ID token's signature is checked against OpenAI's published keys, with its issuer, audience, nonce and expiry. No token is put in a URL or a log line, and on Windows the token folder is cut to your account alone.
+
+Where it stops:
+
+- **Auto mode.** Claude Code's auto mode approves actions with Anthropic's server-side classifier, which judges only Claude's own requests. An action GPT asks for that would need that approval is refused, with the reason; the band warns about it. While GPT answers, use the default or accept-edits mode (Shift+Tab).
+- **Built-in subagent types** (Explore, Plan, general-purpose) on GPT get their role but not Claude Code's internal prompt for that type, which a mod cannot read.
+- **Calls with no hook.** A call Claude Code makes for itself without a hook a mod can answer still goes to Anthropic with the picked model's name, if Claude Code makes one.
 - Needs Python 3 on the PATH (`/gpt python <path>` for another); `scripts/gpt.py` uses only its standard library.
 
 ## License

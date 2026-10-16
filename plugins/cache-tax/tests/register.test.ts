@@ -2,7 +2,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { CommandRunInput, ConfigSetInput, ModelForkResult, On, PromptSubmitInput, RenderPropsOf, SessionStartInput, TurnCompleteInput, TurnUsage } from 'claude-code'
 
 import { statusIcons } from '../hooks/status-icons'
-import { fmtDuration, freshState, parseDuration, resetForClear, seedFromResume } from '../hooks/register'
+import { fmtDuration, freshState, isClaude, parseDuration, resetForClear, seedFromResume } from '../hooks/register'
 
 tier('user')
 
@@ -939,5 +939,46 @@ describe('ask before a cold send', () => {
     const r = await $.prompt.submit(prompt('one'))
     expect(r.drop).toBe('cache-tax test: not sent.')
     expect(w.entered).toEqual([])
+  })
+})
+
+describe('another model answering', () => {
+  test('isClaude counts Claude and unknown models as Claude, other providers\' models not', async () => {
+    expect(isClaude('claude-opus-5-5')).toBe(true)
+    expect(isClaude('some-future-model')).toBe(true)
+    expect(isClaude(null)).toBe(true)
+    expect(isClaude('gpt-6-astra')).toBe(false)
+    expect(isClaude('o3')).toBe(false)
+  })
+
+  test('a turn another model answered leaves Claude\'s context and clock alone', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await clock.advance(30 * MIN)
+    await $.turn.complete(turn({ usage: usage({ model: 'gpt-6-astra', cache_read_input_tokens: 5, cache_creation_input_tokens: 0 }) }))
+    const card = await $.command.run(run('cache-tax', 'status'))
+    expect(card.text).toMatch(/context     200,502 tokens/)
+    expect(card.text).toMatch(/state       warm, 30m left/)
+  })
+
+  test('after a step another model answered, a send on Claude\'s cold cache is not stopped', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    const asked = answering(on, "Don't send")
+    on('turn.step', async function* ($, e) {
+      return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const, usage: usage({ model: 'gpt-6-astra' }) }
+    })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    for await (const _ of $.turn.step({ turnId: 't9', index: 0, model: 'claude-fable-5-1', messageCount: 1 })) {
+      // the step answers whole
+    }
+    await clock.advance(3 * HOUR)
+    const r = await $.prompt.submit(prompt('hi'))
+    expect(r.drop).toBe(undefined)
+    expect(w.entered).toEqual(['hi'])
+    expect(asked).toEqual([])
   })
 })

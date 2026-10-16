@@ -50,6 +50,16 @@ export type State = {
   stopped: string | null
   /** `/cache-tax guard test`: the next prompt asks as if the cache were cold, and nothing is scored. */
   testOnce: boolean
+  /** The model that answered the main loop's last step; another model's steps leave Claude's cache alone. */
+  lastAnswerModel: string | null
+}
+
+/**
+ * Whether a model is Claude, whose prompt cache this mod tracks. An unknown model counts as
+ * Claude; another provider's model (an OpenAI one through openai-models, say) does not.
+ */
+export function isClaude(model: string | null | undefined): boolean {
+  return !/^(gpt|o\d|chatgpt|codex|gemini|grok|llama|mistral|deepseek|qwen)\b/i.test(model ?? '')
 }
 
 function priceOf(model: string | null): [number, number, number] | null {
@@ -253,6 +263,8 @@ async function ping($: EngineInterface, s: State) {
   if (now >= s.deadline) return arm($, s)
   // A turn in the meantime re-armed the timer; this callback is stale.
   if (isCold(s, now)) return arm($, s)
+  // A fork goes to the model answering the main thread; while that is not Claude, it warms nothing of Claude's.
+  if (!isClaude(s.lastAnswerModel)) return stop($, s, `${s.lastAnswerModel} answers this session, so there is no Claude cache to keep warm`)
   if (now - s.lastRequestAt < s.every - 1000) return
   let reply
   try {
@@ -320,6 +332,7 @@ export function freshState(): State {
   return {
     hasBand: false, sid: '', deadline: 0, every: PING_AFTER_MS, always: false, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'refuse', ackedAt: 0, coldWritePending: false, misses: [], pending: null, last: null, stopped: null, testOnce: false,
+    lastAnswerModel: null,
   }
 }
 
@@ -490,6 +503,8 @@ export const register: Register = on => {
       const answer = await ask($, `cache-tax test, as if the cache were cold: ${costText(s)} ${saveText(s)} Send it anyway?`, send)
       return answer === send ? next(e) : { drop: 'cache-tax test: not sent.' }
     }
+    // Another model answers this prompt (picked in /model, or the last step's): Claude's cold cache costs nothing.
+    if (!isClaude(s.lastAnswerModel) || !isClaude(await $.session.model())) return next(e)
     if (!isCold(s, now) || s.ctx < BIG_TOKENS) return next(e)
     if (s.guard === 'warn') {
       $.ui.log(`${guardText(s, now)} Sending anyway; keepwarm will hold the cache for ${fmtDuration(AUTO_WARM_MS)} once it lands.`)
@@ -515,14 +530,28 @@ export const register: Register = on => {
     return { drop: `cache-tax: ${guardText(s, now)} Send it again to pay it, and keepwarm will then hold the cache for ${fmtDuration(AUTO_WARM_MS)}. Or /clear and start from a note.` }
   })
 
+  // Only Claude's own requests read and write its prompt cache: a step another model answered
+  // gives the clock back the time it had.
   on('turn.step', async function* ($, e, next) {
+    const before = s.lastRequestAt
     if (!e.agentId) s.lastRequestAt = await $.clock.now()
-    yield* next(e)
+    const result = yield* next(e)
+    if (!e.agentId) {
+      s.lastAnswerModel = result?.usage?.model ?? e.model
+      if (!isClaude(s.lastAnswerModel)) s.lastRequestAt = before
+    }
+    return result
   })
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId) return r
+    // A turn another model answered changed nothing in Claude's cache, its size or its cost.
+    if (!isClaude(e.usage?.model ?? s.lastAnswerModel)) {
+      s.coldWritePending = false
+      s.ackedAt = 0
+      return r
+    }
     const now = await $.clock.now()
     // A sleeping host may deliver this turn before the expired window's timer.
     if (s.deadline && now >= s.deadline) await stop($, s, null)
